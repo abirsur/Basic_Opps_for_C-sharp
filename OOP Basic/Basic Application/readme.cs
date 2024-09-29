@@ -1,7 +1,15 @@
-import requests
 import pandas as pd
 import xlsxwriter
 from datetime import datetime, timedelta
+import subprocess
+import json
+import requests
+
+# Function to fetch access token using Azure CLI
+def get_access_token():
+    result = subprocess.run(['az', 'account', 'get-access-token', '--resource', 'https://management.azure.com/'], stdout=subprocess.PIPE)
+    token = json.loads(result.stdout)
+    return token['accessToken']
 
 # Function to fetch cost data from Azure API
 def fetch_cost_data(subscription_id, start_date, end_date, access_token):
@@ -41,6 +49,16 @@ def fetch_cost_data(subscription_id, start_date, end_date, access_token):
     response.raise_for_status()
     return response.json()
 
+# Function to save data to JSON file
+def save_data_to_json(data, file_path):
+    with open(file_path, 'w') as f:
+        json.dump(data, f, indent=4)
+
+# Function to load data from JSON file
+def load_data_from_json(file_path):
+    with open(file_path, 'r') as f:
+        return json.load(f)
+
 # Function to process data
 def process_data(data):
     df = pd.json_normalize(data['properties']['rows'])
@@ -78,8 +96,12 @@ def create_excel_report(resource_cost, type_cost, output_file):
         worksheet.insert_chart('E2', chart)
 
 # Main function
-def main(subscription_id, start_date, end_date, access_token, output_file):
+def main(subscription_id, start_date, end_date, json_file, output_file):
+    access_token = get_access_token()
     data = fetch_cost_data(subscription_id, start_date, end_date, access_token)
+    save_data_to_json(data, json_file)
+    
+    data = load_data_from_json(json_file)
     resource_cost, type_cost = process_data(data)
     create_excel_report(resource_cost, type_cost, output_file)
 
@@ -87,7 +109,7 @@ def main(subscription_id, start_date, end_date, access_token, output_file):
 subscription_id = 'your_subscription_id'
 start_date = '2023-01-01'
 end_date = '2023-01-31'
-access_token = 'your_access_token'
+json_file = 'azure_cost_data.json'
 output_file = 'azure_cost_report.xlsx'
 
-main(subscription_id, start_date, end_date, access_token, output_file)
+main(subscription_id, start_date, end_date, json_file, output_file)
