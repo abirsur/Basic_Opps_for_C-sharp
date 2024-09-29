@@ -1,115 +1,51 @@
-import pandas as pd
-import xlsxwriter
-from datetime import datetime, timedelta
-import subprocess
-import json
-import requests
-
-# Function to fetch access token using Azure CLI
-def get_access_token():
-    result = subprocess.run(['az', 'account', 'get-access-token', '--resource', 'https://management.azure.com/'], stdout=subprocess.PIPE)
-    token = json.loads(result.stdout)
-    return token['accessToken']
-
-# Function to fetch cost data from Azure API
-def fetch_cost_data(subscription_id, start_date, end_date, access_token):
-    url = f"https://management.azure.com/subscriptions/{subscription_id}/providers/Microsoft.CostManagement/query?api-version=2019-11-01"
-    headers = {
-        'Authorization': f'Bearer {access_token}',
-        'Content-Type': 'application/json'
-    }
-    body = {
-        "type": "Usage",
-        "timeframe": "Custom",
-        "timePeriod": {
-            "from": start_date,
-            "to": end_date
-        },
-        "dataset": {
-            "granularity": "Daily",
-            "aggregation": {
-                "totalCost": {
-                    "name": "PreTaxCost",
-                    "function": "Sum"
-                }
-            },
-            "grouping": [
-                {
-                    "type": "Dimension",
-                    "name": "ResourceId"
-                },
-                {
-                    "type": "Dimension",
-                    "name": "ResourceType"
-                }
-            ]
-        }
-    }
-    response = requests.post(url, headers=headers, json=body)
-    response.raise_for_status()
-    return response.json()
-
-# Function to save data to JSON file
-def save_data_to_json(data, file_path):
-    with open(file_path, 'w') as f:
-        json.dump(data, f, indent=4)
-
-# Function to load data from JSON file
-def load_data_from_json(file_path):
-    with open(file_path, 'r') as f:
-        return json.load(f)
-
 # Function to process data
-def process_data(data):
-    df = pd.json_normalize(data['properties']['rows'])
-    df.columns = ['Date', 'ResourceId', 'ResourceType', 'Cost']
-    df['Date'] = pd.to_datetime(df['Date'])
-    df['Week'] = df['Date'].dt.to_period('W').apply(lambda r: r.start_time)
-    resource_cost = df.groupby(['ResourceId', 'Week'])['Cost'].sum().reset_index()
-    type_cost = df.groupby(['ResourceType', 'Week'])['Cost'].sum().reset_index()
-    return resource_cost, type_cost
+def process_data(data, group_by):
+    df = pd.DataFrame(data)
+    df['usagedate'] = pd.to_datetime(df['usagedate'])
+    df['Week'] = df['usagedate'].dt.to_period('W').apply(lambda r: r.start_time)
+    weekly_cost = df.groupby([group_by, 'Week'])['cost'].sum().unstack(fill_value=0).reset_index()
+    return weekly_cost
 
 # Function to create Excel report
-def create_excel_report(resource_cost, type_cost, output_file):
+def create_excel_report(resource_type_cost, resource_id_cost, output_file):
     with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
-        resource_cost.to_excel(writer, sheet_name='Resource Cost', index=False)
-        type_cost.to_excel(writer, sheet_name='Type Cost', index=False)
-        
+        # Write ResourceType sheet
+        resource_type_cost.to_excel(writer, sheet_name='Resource Type Cost', index=False, startrow=1)
         workbook = writer.book
-        worksheet = writer.sheets['Resource Cost']
+        worksheet = writer.sheets['Resource Type Cost']
         
-        chart = workbook.add_chart({'type': 'column'})
-        chart.add_series({
-            'categories': ['Resource Cost', 1, 1, len(resource_cost), 1],
-            'values': ['Resource Cost', 1, 2, len(resource_cost), 2],
-            'name': 'Resource Cost'
-        })
-        worksheet.insert_chart('E2', chart)
-
-        worksheet = writer.sheets['Type Cost']
-        chart = workbook.add_chart({'type': 'column'})
-        chart.add_series({
-            'categories': ['Type Cost', 1, 1, len(type_cost), 1],
-            'values': ['Type Cost', 1, 2, len(type_cost), 2],
-            'name': 'Type Cost'
-        })
-        worksheet.insert_chart('E2', chart)
+        # Add headers for ResourceType sheet
+        worksheet.write(0, 0, 'SlNo')
+        worksheet.write(0, 1, 'ResourceType')
+        for col_num, week in enumerate(resource_type_cost.columns[1:], start=2):
+            worksheet.write(0, col_num, f"Week ({week.strftime('%m-%d')} to {(week + timedelta(days=6)).strftime('%m-%d')})")
+        
+        # Add SlNo column for ResourceType sheet
+        for row_num in range(1, len(resource_type_cost) + 1):
+            worksheet.write(row_num, 0, row_num)
+        
+        # Write ResourceId sheet
+        resource_id_cost.to_excel(writer, sheet_name='Resource ID Cost', index=False, startrow=1)
+        worksheet = writer.sheets['Resource ID Cost']
+        
+        # Add headers for ResourceId sheet
+        worksheet.write(0, 0, 'SlNo')
+        worksheet.write(0, 1, 'ResourceId')
+        for col_num, week in enumerate(resource_id_cost.columns[1:], start=2):
+            worksheet.write(0, col_num, f"Week ({week.strftime('%m-%d')} to {(week + timedelta(days=6)).strftime('%m-%d')})")
+        
+        # Add SlNo column for ResourceId sheet
+        for row_num in range(1, len(resource_id_cost) + 1):
+            worksheet.write(row_num, 0, row_num)
 
 # Main function
 def main(subscription_id, start_date, end_date, json_file, output_file):
     access_token = get_access_token()
     data = fetch_cost_data(subscription_id, start_date, end_date, access_token)
-    save_data_to_json(data, json_file)
+    transformed_data = transform_data(data)
+    save_data_to_json(transformed_data, json_file)
     
     data = load_data_from_json(json_file)
-    resource_cost, type_cost = process_data(data)
-    create_excel_report(resource_cost, type_cost, output_file)
-
-# Example usage
-subscription_id = 'your_subscription_id'
-start_date = '2023-01-01'
-end_date = '2023-01-31'
-json_file = 'azure_cost_data.json'
-output_file = 'azure_cost_report.xlsx'
-
-main(subscription_id, start_date, end_date, json_file, output_file)
+    resource_type_cost = process_data(data, 'resourcetype')
+    resource_id_cost = process_data(data, 'resourceid')
+    create_excel_report(resource_type_cost, resource_id_cost, output_file)
