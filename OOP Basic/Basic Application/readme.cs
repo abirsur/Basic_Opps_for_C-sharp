@@ -7,7 +7,7 @@ import requests
 
 # Function to fetch access token using Azure CLI
 def get_access_token():
-    result = subprocess.run(['az', 'account', 'get-access-token', '--resource', 'https://management.azure.com/'], stdout=subprocess.PIPE)
+    result = subprocess.run(['az', 'account', 'get-access-token', '--resource', 'https://management.azure.com'], stdout=subprocess.PIPE)
     token = json.loads(result.stdout)
     return token['accessToken']
 
@@ -76,7 +76,7 @@ def load_data_from_json(file_path):
 def process_data(data):
     df = pd.DataFrame(data)
     df['usagedate'] = pd.to_datetime(df['usagedate'])
-    df['Week'] = df['usagedate'].dt.to_period('W').apply(lambda r: r.start_time)
+    df['Week'] = df['usagedate'].dt.isocalendar().week
     df['cost'] = df['cost'].round(2)
     return df
 
@@ -112,8 +112,8 @@ def create_excel_report(df, output_file):
         for col_num in range(2, len(pivot_table.columns) + 1):
             worksheet.set_column(col_num, col_num, None, currency_format)
         
-        # Create a scatter chart with lines and markers
-        chart = workbook.add_chart({'type': 'scatter', 'subtype': 'straight_with_markers'})
+        # Create a scatter chart with smooth lines and markers
+        chart = workbook.add_chart({'type': 'scatter', 'subtype': 'smooth_with_markers'})
         
         for i in range(1, len(pivot_table)):
             chart.add_series({
@@ -122,20 +122,27 @@ def create_excel_report(df, output_file):
                 'values':     ['Pivot Table', i + 1, 2, i + 1, len(pivot_table.columns) - 1],
             })
         
-        chart.set_x_axis({'name': 'Week'})
+        chart.set_x_axis({
+            'name': 'Week',
+            'categories': ['Pivot Table', 1, 2, 1, len(pivot_table.columns) - 1],
+            'label_position': 'low'
+        })
         chart.set_y_axis({'name': 'Cost'})
         chart.set_title({'name': 'Resource Cost by Week'})
+        
+        # Set chart size
+        chart.set_size({'width': 720, 'height': 576})
         
         worksheet.insert_chart('E2', chart)
 
 # Main function
-def main(subscription_id, start_date, end_date, json_file, output_file):
+def main(subscription_id, start_date, end_date, output_file):
     access_token = get_access_token()
     data = fetch_cost_data(subscription_id, start_date, end_date, access_token)
     transformed_data = transform_data(data)
-    save_data_to_json(transformed_data, json_file)
+    save_data_to_json(transformed_data, 'azure_cost_data.json')
     
-    data = load_data_from_json(json_file)
+    data = load_data_from_json('azure_cost_data.json')
     df = process_data(data)
     create_excel_report(df, output_file)
 
@@ -143,7 +150,6 @@ def main(subscription_id, start_date, end_date, json_file, output_file):
 subscription_id = 'your_subscription_id'
 start_date = '2023-01-01'
 end_date = '2023-01-31'
-json_file = 'azure_cost_data.json'
 output_file = 'azure_cost_report.xlsx'
 
-main(subscription_id, start_date, end_date, json_file, output_file)
+main(subscription_id, start_date, end_date, output_file)
